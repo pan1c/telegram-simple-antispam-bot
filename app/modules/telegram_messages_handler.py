@@ -1,10 +1,14 @@
 from .logging import logging
 from .settings import telegram_api_token, question, good_answer, bad_answer, timeout
 import asyncio
+import random
+from faker import Faker
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, Application, CommandHandler, MessageHandler, filters, CallbackContext
 from telegram.error import BadRequest
+
+fake = Faker()
 
 async def new_chat_members(update: Update, context: CallbackContext) -> None:
     """ Handle new chat members by sending them a verification message after a delay. """
@@ -23,10 +27,30 @@ async def new_chat_members(update: Update, context: CallbackContext) -> None:
 async def send_verification_message(update: Update, context: CallbackContext, user) -> None:
     """ Send a verification message with buttons to the user. """
 
-    text = f"Hello, {user.mention_html()}! To continue the conversation, press the button with the correct answer."
+async def send_verification_message(update: Update, context: CallbackContext, user) -> None:
+    # Define your good and bad answers
+
+    # Generate four additional random words
+    additional_answers = [fake.word() for _ in range(2)]
+
+    # Ensure the additional answers are unique and not equal to good or bad answer
+    for i in range(len(additional_answers)):
+        while additional_answers[i] == good_answer or additional_answers[i] == bad_answer or additional_answers[i] in additional_answers[:i]:
+            additional_answers[i] = fake.word()
+
+    # Combine all answers and shuffle them
+    answers = [good_answer, bad_answer] + additional_answers
+    random.shuffle(answers)
+
+    # Create the inline keyboard buttons
+    keyboard = [[InlineKeyboardButton(text=answer, callback_data=f"verify_{user.id}_{answer}") for answer in answers]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # Send the verification message
+    text = f"Hello, {user.mention_html()}! To continue the conversation, please select the correct answer."
     text += f"\n\nYou have {timeout} seconds."
     text += f"\n\n{question}"
-    answers = [good_answer, bad_answer]
+
     keyboard = [[InlineKeyboardButton(text=answer, callback_data=f"verify_{user.id}_{answer}") for answer in answers]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
