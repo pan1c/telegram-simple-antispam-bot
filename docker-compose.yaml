@@ -1,0 +1,8 @@
+version: "3.7"
+
+services:
+  bot:
+    build: .
+    image: telegram-simple-antispam-bot
+    env_file:
+      - secrets.env

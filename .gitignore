@@ -1,0 +1,34 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Logs
+*.log
+
+# IDE specific files
+.idea/
+.vscode/
+
+
+bin/dev/test.sh
+secrets.env
+config.json
+
+myapp/data/welcome.txt
+
+
+#Linters
+
+.pre-commit-config.yaml
+.pylintrc
+.style.yapf

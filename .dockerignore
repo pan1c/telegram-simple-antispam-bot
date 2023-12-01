@@ -1,0 +1,8 @@
+# ignore virtualenv
+venv/
+
+# ignore dev script
+bin/dev
+
+# ignore secrets
+secrets.env
