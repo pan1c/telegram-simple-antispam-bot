@@ -9,8 +9,11 @@ from telegram.ext import CallbackQueryHandler, Application, CommandHandler, Mess
 from telegram.error import BadRequest
 
 fake = Faker()
+jobs_dict = {} # When user invited by other user, bot for some reason clears context.user_data, so we need to store jobs in global dict
+
 
 async def new_chat_members(update: Update, context: CallbackContext) -> None:
+    logging.debug (f"context.user_data at function start: {context.user_data}")
     """ Handle new chat members by sending them a verification message after a delay. """
     if update.message.text == "/new":
         # This is a command, not a new chat member
@@ -23,12 +26,12 @@ async def new_chat_members(update: Update, context: CallbackContext) -> None:
         await asyncio.sleep(3)  # Wait for 2 seconds before sending the verification message
         for member in new_members:
             await send_verification_message(update, context, member)
+    logging.debug (f"context.user_data at function end: {context.user_data}")
+
 
 async def send_verification_message(update: Update, context: CallbackContext, user) -> None:
-    """ Send a verification message with buttons to the user. """
-
-async def send_verification_message(update: Update, context: CallbackContext, user) -> None:
-    # Define your good and bad answers
+    """ Send a verification message to the user. """
+    logging.debug (f"context.user_data at function start: {context.user_data}")
 
     # Generate four additional random words
     additional_answers = [fake.word() for _ in range(2)]
@@ -61,12 +64,13 @@ async def send_verification_message(update: Update, context: CallbackContext, us
     # Set a timeout for the user to answer
     logging.info(f"Setting timeout for user {user}.")
     context.user_data[f"message_{user.id}"] = sent_message
-    context.user_data[f'event_{user.id}'] = asyncio.Event()
     # Set a task to kick the user if they don't answer in time
-    context.user_data[f'timeout_task_{user.id}'] = asyncio.create_task(timeout_kick(update, context, user, timeout))
-    logging.info(f"Timeout set for user {user}.")
+    #context.user_data[f'timeout_task_{user.id}'] = asyncio.create_task(timeout_kick(update, context, user, timeout))
+    jobs_dict[f'timeout_task_{user.id}'] = asyncio.create_task(timeout_kick(update, context, user, timeout))
+    logging.debug (f"context.user_data at function end: {context.user_data}")
 
 async def timeout_kick(update: Update, context: CallbackContext, user, timeout: int):
+    logging.debug (f"context.user_data at function start: {context.user_data}")
     """ Kick the user if they don't respond in time. """
     remaining_time = timeout
     half_time_sent = False
@@ -75,7 +79,7 @@ async def timeout_kick(update: Update, context: CallbackContext, user, timeout: 
     while remaining_time > 0:
         if remaining_time < timeout // 2 and not half_time_sent:
             # Send a reminder to the user
-            reminder_text = f"{remaining_time} left for user {user.mention_html()} to answer"
+            reminder_text = f"{remaining_time} seconds left for user {user.mention_html()} to answer"
             await context.bot.send_message(chat_id=update.effective_chat.id, text=reminder_text, parse_mode='HTML')
             logging.info(f"User {user.id} has {remaining_time} seconds left to respond.")
             half_time_sent = True
@@ -91,6 +95,7 @@ async def timeout_kick(update: Update, context: CallbackContext, user, timeout: 
         if f"message_{user.id}" in context.user_data:
             message_to_delete = context.user_data[f"message_{user.id}"]
             await messsage_delete(message_to_delete)
+    logging.debug (f"context.user_data at function end: {context.user_data}")
 
 async def kick_user(update: Update, context: CallbackContext, user_id: int) -> None:
     """ Kick the user out of the chat. """
@@ -109,6 +114,7 @@ async def messsage_delete(message) -> None:
 
 async def handle_answer(update: Update, context: CallbackContext) -> None:
     """ Handle the user's answer. """
+    logging.debug (f"context.user_data at function start: {context.user_data}")
     logging.info(f"Handling answer: {update.callback_query.data}")
     query = update.callback_query
     user_id, answer = query.data.split('_')[1:]
@@ -131,11 +137,16 @@ async def handle_answer(update: Update, context: CallbackContext) -> None:
         logging.info(f"User {user_id} provided an incorrect answer.")
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"User {user_id} provided an incorrect answer. Kicking.")
         await kick_user(update, context, user_id)
-
+    logging.info(f"Deleting message for user {user_id}.")
     await messsage_delete(query.message)
-    task = context.user_data.pop(f'timeout_task_{user_id}', None)
+    logging.info(f"Deleting timeout task for user {user_id}.")
+
+    #task = context.user_data.pop(f'timeout_task_{user_id}', None)
+    task = jobs_dict.pop(f'timeout_task_{user_id}', None)
+    logging.info(f"task: {task}")
     if task:
         task.cancel()
+    logging.debug (f"context.user_data at function end: {context.user_data}")
 
 async def ping_command(update: Update, context: CallbackContext) -> None:
     """ Send a help message in response to the /help command. """
