@@ -15,7 +15,7 @@ jobs_dict = {} # When user invited by other user, bot for some reason clears con
 async def new_chat_members(update: Update, context: CallbackContext) -> None:
     logging.debug (f"context.user_data at function start: {context.user_data}")
     """ Handle new chat members by sending them a verification message after a delay. """
-    if update.message.text.startswith("/new"):
+    if update.message.text and update.message.text.startswith("/new"):
         # This is a command, not a new chat member
         logging.info("This is a command, not a new chat member.")
         member =  update.message.from_user
