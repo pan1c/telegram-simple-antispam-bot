@@ -15,7 +15,7 @@ jobs_dict = {} # When user invited by other user, bot for some reason clears con
 async def new_chat_members(update: Update, context: CallbackContext) -> None:
     logging.debug (f"context.user_data at function start: {context.user_data}")
     """ Handle new chat members by sending them a verification message after a delay. """
-    if update.message.text == "/new":
+    if update.message.text.startswith("/new"):
         # This is a command, not a new chat member
         logging.info("This is a command, not a new chat member.")
         member =  update.message.from_user
@@ -33,8 +33,8 @@ async def send_verification_message(update: Update, context: CallbackContext, us
     """ Send a verification message to the user. """
     logging.debug (f"context.user_data at function start: {context.user_data}")
 
-    # Generate four additional random words
-    additional_answers = [fake.word() for _ in range(2)]
+    # Generate additional random emojis
+    additional_answers = [fake.emoji() for _ in range(2)]
 
     # Ensure the additional answers are unique and not equal to good or bad answer
     for i in range(len(additional_answers)):
