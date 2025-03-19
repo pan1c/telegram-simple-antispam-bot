@@ -9,7 +9,9 @@ from telegram.ext import CallbackQueryHandler, Application, CommandHandler, Mess
 from telegram.error import BadRequest
 
 fake = Faker()
-jobs_dict = {} # When user invited by other user, bot for some reason clears context.user_data, so we need to store jobs in global dict
+jobs_dict = {} # When a user is invited by another user, the bot clears context.user_data due to how the Telegram library handles new chat members.
+# This happens because context.user_data is tied to individual updates, and new member events reset the context.
+# To persist tasks like timeout jobs across updates, we use a global dictionary (jobs_dict) as a workaround.
 
 
 async def new_chat_members(update: Update, context: CallbackContext) -> None:
@@ -45,15 +47,12 @@ async def send_verification_message(update: Update, context: CallbackContext, us
     answers = [good_answer, bad_answer] + additional_answers
     random.shuffle(answers)
 
-    # Create the inline keyboard buttons
-    keyboard = [[InlineKeyboardButton(text=answer, callback_data=f"verify_{user.id}_{answer}") for answer in answers]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    # Send the verification message
+    # Compose the verification message
     text = f"Hello, {user.mention_html()}! To continue the conversation, please select the correct answer."
     text += f"\n\nYou have {timeout} seconds."
     text += f"\n\n{question}"
 
+    # Create the inline keyboard buttons
     keyboard = [[InlineKeyboardButton(text=answer, callback_data=f"verify_{user.id}_{answer}") for answer in answers]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -79,6 +78,7 @@ async def timeout_kick(update: Update, context: CallbackContext, user, timeout: 
         if remaining_time < timeout // 2 and not half_time_sent:
             # Send a reminder to the user
             reminder_text = f"{remaining_time} seconds left for user {user.mention_html()} to answer"
+            reminder_text = f"{remaining_time} seconds left for user {user.mention_html()} to answer.\n\n{question}\n\nPlease select the correct answer from the options provided."
             await context.bot.send_message(chat_id=update.effective_chat.id, text=reminder_text, parse_mode='HTML')
             logging.info(f"User {user.id} has {remaining_time} seconds left to respond.")
             half_time_sent = True
@@ -93,7 +93,7 @@ async def timeout_kick(update: Update, context: CallbackContext, user, timeout: 
         # Delete the message if it still exists
         if f"message_{user.id}" in context.user_data:
             message_to_delete = context.user_data[f"message_{user.id}"]
-            await messsage_delete(message_to_delete)
+            await message_delete(message_to_delete)
     logging.debug (f"context.user_data at function end: {context.user_data}")
 
 async def kick_user(update: Update, context: CallbackContext, user_id: int) -> None:
@@ -104,7 +104,7 @@ async def kick_user(update: Update, context: CallbackContext, user_id: int) -> N
     await context.bot.unban_chat_member(chat_id=update.effective_chat.id, user_id=user_id)
     logging.info(f"User {user_id} has been unbanned.")
 
-async def messsage_delete(message) -> None:
+async def message_delete(message) -> None:
     """Delete the message if it exists."""
     try:
         await message.delete()
@@ -137,10 +137,12 @@ async def handle_answer(update: Update, context: CallbackContext) -> None:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"User {user_id} provided an incorrect answer. Kicking.")
         await kick_user(update, context, user_id)
     logging.info(f"Deleting message for user {user_id}.")
-    await messsage_delete(query.message)
+    await message_delete(query.message)
     logging.info(f"Deleting timeout task for user {user_id}.")
 
     task = jobs_dict.pop(f'timeout_task_{user_id}', None)
+    if task is None:
+        logging.warning(f"No timeout task found for user {user_id} in jobs_dict.")
     logging.info(f"task: {task}")
     if task:
         task.cancel()
@@ -151,6 +153,22 @@ async def ping_command(update: Update, context: CallbackContext) -> None:
     await update.message.reply_html("pong", disable_web_page_preview=True)
 
 def main() -> None:
+    """
+    Start the bot and add command handlers.
+
+    This bot is designed to handle new chat members by verifying them with a question.
+    It includes the following functionalities:
+    - Responds to the /ping command with "pong".
+    - Handles the /new command to manually trigger the verification process for a user.
+    - Automatically verifies new chat members when they join the chat.
+    - Processes user answers to the verification question and takes appropriate actions (e.g., kicking users for incorrect answers or timeouts).
+
+    Handlers added:
+    - CommandHandler("ping", ping_command): Responds to the /ping command.
+    - CommandHandler("new", new_chat_members): Manually triggers the verification process.
+    - MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_members): Automatically handles new chat members.
+    - CallbackQueryHandler(handle_answer, pattern=r'^verify_\\d+_.+$'): Processes answers to the verification question.
+    """
     """Start the bot and add command handlers."""
     application = Application.builder().token(telegram_api_token).build()
 
