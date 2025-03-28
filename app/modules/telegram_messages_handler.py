@@ -13,6 +13,8 @@ jobs_dict = {} # When a user is invited by another user, the bot clears context.
 # This happens because context.user_data is tied to individual updates, and new member events reset the context.
 # To persist tasks like timeout jobs across updates, we use a global dictionary (jobs_dict) as a workaround.
 
+VERIFICATION_DELAY_SECONDS = 3
+UNBAN_DELAY_SECONDS = 5
 
 async def new_chat_members(update: Update, context: CallbackContext) -> None:
     """Handle new chat members by sending them a verification message after a delay."""
@@ -25,7 +27,7 @@ async def new_chat_members(update: Update, context: CallbackContext) -> None:
     else:
         new_members = update.message.new_chat_members
         logging.info(f"New chat members: {new_members}")
-        await asyncio.sleep(3)  # Wait for 3 seconds before sending the verification message
+        await asyncio.sleep(VERIFICATION_DELAY_SECONDS)  # Wait for 3 seconds before sending the verification message
         for member in new_members:
             await send_verification_message(update, context, member)
     logging.debug (f"context.user_data at function end: {context.user_data}")
@@ -77,7 +79,6 @@ async def timeout_kick(update: Update, context: CallbackContext, user, timeout: 
     while remaining_time > 0:
         if remaining_time < timeout // 2 and not half_time_sent:
             # Send a reminder to the user
-            reminder_text = f"{remaining_time} seconds left for user {user.mention_html()} to answer"
             reminder_text = f"{remaining_time} seconds left for user {user.mention_html()} to answer.\n\n{question}\n\nPlease select the correct answer from the options provided."
             await context.bot.send_message(chat_id=update.effective_chat.id, text=reminder_text, parse_mode='HTML')
             logging.info(f"User {user.id} has {remaining_time} seconds left to respond.")
@@ -100,7 +101,7 @@ async def kick_user(update: Update, context: CallbackContext, user_id: int) -> N
     """Kick the user out of the chat and unban them after a delay."""
     await context.bot.ban_chat_member(chat_id=update.effective_chat.id, user_id=user_id)
     logging.info(f"User {user_id} has been kicked.")
-    await asyncio.sleep(5)  # Wait for 5 seconds before unbanning the user
+    await asyncio.sleep(UNBAN_DELAY_SECONDS)  # Wait for 5 seconds before unbanning the user
     await context.bot.unban_chat_member(chat_id=update.effective_chat.id, user_id=user_id)
     logging.info(f"User {user_id} has been unbanned.")
 
