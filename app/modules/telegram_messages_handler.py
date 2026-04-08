@@ -1,109 +1,175 @@
-from .logging import logging
-from .settings import telegram_api_token, question, good_answer, bad_answer, timeout
 import asyncio
 import random
-from faker import Faker
 
+from faker import Faker
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import CallbackQueryHandler, Application, CommandHandler, MessageHandler, filters, CallbackContext
 from telegram.error import BadRequest
+from telegram.ext import (
+    Application,
+    CallbackContext,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    filters,
+)
+
+from .logging import logging
+from .settings import (
+    bad_answer,
+    good_answer,
+    question,
+    telegram_api_token,
+    timeout,
+    unban_delay_seconds,
+)
 
 fake = Faker()
-jobs_dict = {} # When a user is invited by another user, the bot clears context.user_data due to how the Telegram library handles new chat members.
-# This happens because context.user_data is tied to individual updates, and new member events reset the context.
-# To persist tasks like timeout jobs across updates, we use a global dictionary (jobs_dict) as a workaround.
+jobs_dict = {}
+verification_sessions = {}
 
 VERIFICATION_DELAY_SECONDS = 3
-UNBAN_DELAY_SECONDS = 5
+GOOD_ANSWER_CALLBACK = "good"
+BAD_ANSWER_CALLBACK = "bad"
+DECOY_ANSWER_CALLBACKS = ("decoy_1", "decoy_2")
+
+
+def get_session_key(chat_id: int, user_id: int) -> tuple[int, int]:
+    return chat_id, user_id
+
+
+def get_timeout_task_key(chat_id: int, user_id: int) -> tuple[int, int]:
+    return chat_id, user_id
+
+
+def clear_verification_session(chat_id: int, user_id: int) -> None:
+    verification_sessions.pop(get_session_key(chat_id, user_id), None)
+
 
 async def new_chat_members(update: Update, context: CallbackContext) -> None:
     """Handle new chat members by sending them a verification message after a delay."""
-    logging.debug (f"context.user_data at function start: {context.user_data}")
+    logging.debug(f"context.user_data at function start: {context.user_data}")
     if update.message.text and update.message.text.startswith("/new"):
-        # This is a command, not a new chat member
         logging.info("This is a command, not a new chat member.")
-        member =  update.message.from_user
+        member = update.message.from_user
         await send_verification_message(update, context, member)
     else:
         new_members = update.message.new_chat_members
         logging.info(f"New chat members: {new_members}")
-        await asyncio.sleep(VERIFICATION_DELAY_SECONDS)  # Wait for 3 seconds before sending the verification message
+        await asyncio.sleep(VERIFICATION_DELAY_SECONDS)
         for member in new_members:
             await send_verification_message(update, context, member)
-    logging.debug (f"context.user_data at function end: {context.user_data}")
+    logging.debug(f"context.user_data at function end: {context.user_data}")
 
 
 async def send_verification_message(update: Update, context: CallbackContext, user) -> None:
     """Send a verification message to the user with a set of answers to choose from."""
-    logging.debug (f"context.user_data at function start: {context.user_data}")
+    logging.debug(f"context.user_data at function start: {context.user_data}")
+    chat_id = update.effective_chat.id
+    session_key = get_session_key(chat_id, user.id)
+    task_key = get_timeout_task_key(chat_id, user.id)
 
-    # Generate additional random emojis
+    existing_task = jobs_dict.pop(task_key, None)
+    if existing_task:
+        existing_task.cancel()
+    clear_verification_session(chat_id, user.id)
+
     additional_answers = [fake.emoji() for _ in range(2)]
 
-    # Ensure the additional answers are unique and not equal to good or bad answer
     for i in range(len(additional_answers)):
-        while additional_answers[i] == good_answer or additional_answers[i] == bad_answer or additional_answers[i] in additional_answers[:i]:
+        while (
+            additional_answers[i] == good_answer
+            or additional_answers[i] == bad_answer
+            or additional_answers[i] in additional_answers[:i]
+        ):
             additional_answers[i] = fake.word()
 
-    # Combine all answers and shuffle them
-    answers = [good_answer, bad_answer] + additional_answers
+    answers = [
+        (GOOD_ANSWER_CALLBACK, good_answer),
+        (BAD_ANSWER_CALLBACK, bad_answer),
+        (DECOY_ANSWER_CALLBACKS[0], additional_answers[0]),
+        (DECOY_ANSWER_CALLBACKS[1], additional_answers[1]),
+    ]
     random.shuffle(answers)
 
-    # Compose the verification message
     text = f"Hello, {user.mention_html()}! To continue the conversation, please select the correct answer."
     text += f"\n\nYou have {timeout} seconds."
     text += f"\n\n{question}"
 
-    # Create the inline keyboard buttons
-    keyboard = [[InlineKeyboardButton(text=answer, callback_data=f"verify_{user.id}_{answer}") for answer in answers]]
+    keyboard = [[
+        InlineKeyboardButton(
+            text=answer_text,
+            callback_data=f"verify:{user.id}:{answer_id}",
+        )
+        for answer_id, answer_text in answers
+    ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     logging.info(f"Sending verification message to user {user}.")
+    sent_message = await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=reply_markup,
+        parse_mode="HTML",
+    )
 
-    sent_message = await context.bot.send_message(chat_id=update.effective_chat.id, text=text, reply_markup=reply_markup, parse_mode='HTML')
-
-    # Set a timeout for the user to answer
     logging.info(f"Setting timeout for user {user}.")
-    context.user_data[f"message_{user.id}"] = sent_message
-    # Set a task to kick the user if they don't answer in time
-    jobs_dict[f'timeout_task_{user.id}'] = asyncio.create_task(timeout_kick(update, context, user, timeout))
-    logging.debug (f"context.user_data at function end: {context.user_data}")
+    verification_sessions[session_key] = {
+        "message": sent_message,
+        "verified": False,
+    }
+    jobs_dict[task_key] = asyncio.create_task(timeout_kick(update, context, user, timeout))
+    logging.debug(f"context.user_data at function end: {context.user_data}")
 
-async def timeout_kick(update: Update, context: CallbackContext, user, timeout: int):
+
+async def timeout_kick(update: Update, context: CallbackContext, user, timeout: int) -> None:
     """Kick the user if they don't respond in time."""
-    logging.debug (f"context.user_data at function start: {context.user_data}")
+    logging.debug(f"context.user_data at function start: {context.user_data}")
+    chat_id = update.effective_chat.id
+    session_key = get_session_key(chat_id, user.id)
+    task_key = get_timeout_task_key(chat_id, user.id)
     remaining_time = timeout
     half_time_sent = False
     step = 1
     logging.info(f"Timeout for user {user} is {timeout} seconds.")
+
     while remaining_time > 0:
         if remaining_time < timeout // 2 and not half_time_sent:
-            # Send a reminder to the user
-            reminder_text = f"{remaining_time} seconds left for user {user.mention_html()} to answer.\n\n{question}\n\nPlease select the correct answer from the options provided."
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=reminder_text, parse_mode='HTML')
+            reminder_text = (
+                f"{remaining_time} seconds left for user {user.mention_html()} to answer.\n\n"
+                f"{question}\n\nPlease select the correct answer from the options provided."
+            )
+            await context.bot.send_message(chat_id=chat_id, text=reminder_text, parse_mode="HTML")
             logging.info(f"User {user.id} has {remaining_time} seconds left to respond.")
             half_time_sent = True
         await asyncio.sleep(step)
         remaining_time -= step
 
-    if not context.user_data.get(f'verified_{user.id}', False):
-        # The user did not respond in time
+    session = verification_sessions.get(session_key)
+    if session and not session.get("verified", False):
         logging.info(f"User {user.id} did not respond in time. Kicking.")
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"User {user.id} did not respond in time. Kicking.")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"{user.mention_html()} did not respond in time. Kicking.",
+            parse_mode="HTML",
+        )
         await kick_user(update, context, user.id)
-        # Delete the message if it still exists
-        if f"message_{user.id}" in context.user_data:
-            message_to_delete = context.user_data[f"message_{user.id}"]
+        message_to_delete = session.get("message")
+        if message_to_delete:
             await message_delete(message_to_delete)
-    logging.debug (f"context.user_data at function end: {context.user_data}")
+        clear_verification_session(chat_id, user.id)
+
+    jobs_dict.pop(task_key, None)
+    logging.debug(f"context.user_data at function end: {context.user_data}")
+
 
 async def kick_user(update: Update, context: CallbackContext, user_id: int) -> None:
     """Kick the user out of the chat and unban them after a delay."""
     await context.bot.ban_chat_member(chat_id=update.effective_chat.id, user_id=user_id)
     logging.info(f"User {user_id} has been kicked.")
-    await asyncio.sleep(UNBAN_DELAY_SECONDS)  # Wait for 5 seconds before unbanning the user
+    await asyncio.sleep(unban_delay_seconds)
     await context.bot.unban_chat_member(chat_id=update.effective_chat.id, user_id=user_id)
     logging.info(f"User {user_id} has been unbanned.")
+
 
 async def message_delete(message) -> None:
     """Delete the message if it exists."""
@@ -112,78 +178,78 @@ async def message_delete(message) -> None:
     except BadRequest:
         logging.info("Message already deleted or not found.")
 
+
 async def handle_answer(update: Update, context: CallbackContext) -> None:
     """Handle the user's answer to the verification question."""
-    logging.debug (f"context.user_data at function start: {context.user_data}")
+    logging.debug(f"context.user_data at function start: {context.user_data}")
     logging.info(f"Handling answer: {update.callback_query.data}")
     query = update.callback_query
-    user_id, answer = query.data.split('_')[1:]
+    _, user_id, answer_id = query.data.split(":", 2)
     user_id = int(user_id)
+    chat_id = update.effective_chat.id
+    session_key = get_session_key(chat_id, user_id)
+    task_key = get_timeout_task_key(chat_id, user_id)
+    session = verification_sessions.get(session_key)
 
-    # Check if the response is from the user who was asked the question
+    if session is None:
+        await query.answer("Verification request is no longer active.", show_alert=True)
+        return
+
     if query.from_user.id != user_id:
         logging.info(f"User {query.from_user.id} is not the user who was asked the question ({user_id}).")
         text = f"Hey! {query.from_user.mention_html()}! You are not the user who was asked the question."
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode='HTML')
+        await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+        await query.answer()
         return
 
-    # Now process the answer
-    if answer == good_answer:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"User {user_id} provided the correct answer.")
+    if answer_id == GOOD_ANSWER_CALLBACK:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"{query.from_user.mention_html()} provided the correct answer.",
+            parse_mode="HTML",
+        )
         logging.info(f"User {user_id} provided the correct answer.")
-        context.user_data[f'verified_{user_id}'] = True
-        # Additional correct answer handling here
+        session["verified"] = True
     else:
         logging.info(f"User {user_id} provided an incorrect answer.")
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"User {user_id} provided an incorrect answer. Kicking.")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"{query.from_user.mention_html()} provided an incorrect answer. Kicking.",
+            parse_mode="HTML",
+        )
         await kick_user(update, context, user_id)
+
+    await query.answer()
     logging.info(f"Deleting message for user {user_id}.")
     await message_delete(query.message)
     logging.info(f"Deleting timeout task for user {user_id}.")
 
-    task = jobs_dict.pop(f'timeout_task_{user_id}', None)
+    task = jobs_dict.pop(task_key, None)
     if task is None:
         logging.warning(f"No timeout task found for user {user_id} in jobs_dict.")
     logging.info(f"task: {task}")
     if task:
         task.cancel()
-    logging.debug (f"context.user_data at function end: {context.user_data}")
+    clear_verification_session(chat_id, user_id)
+    logging.debug(f"context.user_data at function end: {context.user_data}")
+
 
 async def ping_command(update: Update, context: CallbackContext) -> None:
     """Respond to the /ping command with 'pong'."""
     await update.message.reply_html("pong", disable_web_page_preview=True)
 
+
 def main() -> None:
-    """
-    Start the bot and add command handlers.
-
-    This bot is designed to handle new chat members by verifying them with a question.
-    It includes the following functionalities:
-    - Responds to the /ping command with "pong".
-    - Handles the /new command to manually trigger the verification process for a user.
-    - Automatically verifies new chat members when they join the chat.
-    - Processes user answers to the verification question and takes appropriate actions (e.g., kicking users for incorrect answers or timeouts).
-
-    Handlers added:
-    - CommandHandler("ping", ping_command): Responds to the /ping command.
-    - CommandHandler("new", new_chat_members): Manually triggers the verification process.
-    - MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_members): Automatically handles new chat members.
-    - CallbackQueryHandler(handle_answer, pattern=r'^verify_\\d+_.+$'): Processes answers to the verification question.
-    """
     """Start the bot and add command handlers."""
     application = Application.builder().token(telegram_api_token).build()
 
-    # Add handlers to the application
     application.add_handler(CommandHandler("ping", ping_command))
-
     application.add_handler(CommandHandler("new", new_chat_members))
-
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_members))
+    application.add_handler(CallbackQueryHandler(handle_answer, pattern=r"^verify:\d+:[^:]+$"))
 
-    application.add_handler(CallbackQueryHandler(handle_answer, pattern=r'^verify_\d+_.+$'))
-
-    # Run the bot
     application.run_polling()
+
 
 if __name__ == "__main__":
     main()
