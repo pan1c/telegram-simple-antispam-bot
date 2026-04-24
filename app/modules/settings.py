@@ -3,7 +3,6 @@ from .logging import logging
 
 telegram_api_token = os.getenv("TELEGRAM_BOT_TOKEN")
 log_level = os.getenv("LOG_LEVEL", "INFO")
-allowed_chat_ids = os.getenv("ALLOWED_CHAT_IDS", "any").split(",")
 # Question and answers settings
 question = os.getenv("QUESTION", "Чий Крим?")
 good_answer = os.getenv("GOOD_ANSWER", "🇺🇦")
