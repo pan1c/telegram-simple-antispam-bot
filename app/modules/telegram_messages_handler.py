@@ -2,7 +2,7 @@ import asyncio
 import random
 
 from faker import Faker
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import (
     Application,
@@ -30,12 +30,38 @@ jobs_dict = {}
 verification_sessions = {}
 seen_chat_ids = set()
 
-VERIFICATION_DELAY_SECONDS = 3
+VERIFICATION_DELAY_SECONDS = 1
 GOOD_ANSWER_CALLBACK = "good"
 BAD_ANSWER_CALLBACK = "bad"
 DECOY_ANSWER_CALLBACKS = ("decoy_1", "decoy_2")
 JOINED_CHAT_STATUSES = {"member", "administrator", "restricted"}
 LEFT_CHAT_STATUSES = {"left", "kicked"}
+MUTED_PERMISSIONS = ChatPermissions(
+    can_send_messages=False,
+    can_send_media_messages=False,
+    can_send_polls=False,
+    can_send_other_messages=False,
+    can_add_web_page_previews=False,
+    can_send_audios=False,
+    can_send_documents=False,
+    can_send_photos=False,
+    can_send_videos=False,
+    can_send_video_notes=False,
+    can_send_voice_notes=False,
+)
+UNMUTED_PERMISSIONS = ChatPermissions(
+    can_send_messages=True,
+    can_send_media_messages=True,
+    can_send_polls=True,
+    can_send_other_messages=True,
+    can_add_web_page_previews=True,
+    can_send_audios=True,
+    can_send_documents=True,
+    can_send_photos=True,
+    can_send_videos=True,
+    can_send_video_notes=True,
+    can_send_voice_notes=True,
+)
 
 
 def get_session_key(chat_id: int, user_id: int) -> tuple[int, int]:
@@ -129,9 +155,11 @@ async def new_chat_members(update: Update, context: CallbackContext) -> None:
         if not new_members:
             logging.info("Ignoring new chat members update because it only contains the bot itself.")
             return
+        for member in new_members:
+            await mute_user(update, context, member.id)
         await asyncio.sleep(VERIFICATION_DELAY_SECONDS)
         for member in new_members:
-            await send_verification_message(update, context, member, restart_existing=False)
+            await send_verification_message(update, context, member, restart_existing=False, mute_pending=False)
     logging.debug(f"context.user_data at function end: {context.user_data}")
 
 
@@ -140,6 +168,7 @@ async def send_verification_message(
     context: CallbackContext,
     user,
     restart_existing: bool = True,
+    mute_pending: bool = True,
 ) -> None:
     """Send a verification message to the user with a set of answers to choose from."""
     logging.debug(f"context.user_data at function start: {context.user_data}")
@@ -160,6 +189,8 @@ async def send_verification_message(
     if existing_task:
         existing_task.cancel()
     clear_verification_session(chat_id, user.id)
+    if mute_pending:
+        await mute_user(update, context, user.id)
 
     additional_answers = [fake.emoji() for _ in range(2)]
 
@@ -223,8 +254,7 @@ async def timeout_kick(update: Update, context: CallbackContext, user, timeout: 
     while remaining_time > 0:
         if remaining_time < timeout // 2 and not half_time_sent:
             reminder_text = (
-                f"{remaining_time} seconds left for user {user.mention_html()} to answer.\n\n"
-                f"{question}\n\nPlease select the correct answer from the options provided."
+                f"{user.mention_html()}, {remaining_time} seconds left to answer the verification question."
             )
             await context.bot.send_message(chat_id=chat_id, text=reminder_text, parse_mode="HTML")
             logging.info(f"User {user.id} has {remaining_time} seconds left to respond.")
@@ -262,6 +292,42 @@ async def kick_user(update: Update, context: CallbackContext, user_id: int) -> N
     await asyncio.sleep(unban_delay_seconds)
     await context.bot.unban_chat_member(chat_id=update.effective_chat.id, user_id=user_id)
     logging.info(f"User {user_id} has been unbanned.")
+
+
+async def mute_user(update: Update, context: CallbackContext, user_id: int) -> None:
+    """Mute a user while they are waiting for verification."""
+    bot_id = await get_current_bot_id(context)
+    if user_id == bot_id:
+        logging.warning("Refusing to mute the bot itself.")
+        return
+
+    try:
+        await context.bot.restrict_chat_member(
+            chat_id=update.effective_chat.id,
+            user_id=user_id,
+            permissions=MUTED_PERMISSIONS,
+        )
+        logging.info(f"User {user_id} has been muted until verification.")
+    except BadRequest as exc:
+        logging.warning(f"Failed to mute user {user_id}: {exc}")
+
+
+async def unmute_user(update: Update, context: CallbackContext, user_id: int) -> None:
+    """Restore basic send permissions after successful verification."""
+    bot_id = await get_current_bot_id(context)
+    if user_id == bot_id:
+        logging.warning("Refusing to unmute the bot itself.")
+        return
+
+    try:
+        await context.bot.restrict_chat_member(
+            chat_id=update.effective_chat.id,
+            user_id=user_id,
+            permissions=UNMUTED_PERMISSIONS,
+        )
+        logging.info(f"User {user_id} has been unmuted after verification.")
+    except BadRequest as exc:
+        logging.warning(f"Failed to unmute user {user_id}: {exc}")
 
 
 async def message_delete(message) -> None:
@@ -304,6 +370,7 @@ async def handle_answer(update: Update, context: CallbackContext) -> None:
         )
         logging.info(f"User {user_id} provided the correct answer.")
         session["verified"] = True
+        await unmute_user(update, context, user_id)
     else:
         logging.info(f"User {user_id} provided an incorrect answer.")
         await context.bot.send_message(
@@ -388,7 +455,9 @@ async def log_chat_member(update: Update, context: CallbackContext) -> None:
             f"Treating chat_member status change as a new join for {format_user(user)} "
             f"in {format_chat(member_update.chat)}."
         )
-        await send_verification_message(update, context, user, restart_existing=False)
+        await mute_user(update, context, user.id)
+        await asyncio.sleep(VERIFICATION_DELAY_SECONDS)
+        await send_verification_message(update, context, user, restart_existing=False, mute_pending=False)
 
 
 async def log_bot_identity(application: Application) -> None:
