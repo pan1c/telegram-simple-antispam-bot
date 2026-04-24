@@ -1,8 +1,16 @@
 # Telegram Verification Bot
 
 ## Overview
-This bot manages new chat members in Telegram groups by challenging them with a verification question. Users must respond correctly within a set time limit to stay in the group.
+This bot manages new chat members in Telegram groups by challenging them with a verification question.
 
+When a user joins, the bot:
+- detects both Telegram join event types: `new_chat_members` messages and `chat_member` status changes;
+- immediately mutes the user to prevent join spam;
+- waits briefly, then sends the verification question;
+- unmutes the user after the correct answer;
+- kicks and unbans the user if they fail verification or do not answer before the timeout.
+
+The short "provided the correct answer" confirmation is deleted automatically after 60 seconds to reduce chat noise.
 
 ## Setup and Run
 **Put correct variables into secrets.env file**:
@@ -11,9 +19,13 @@ This bot manages new chat members in Telegram groups by challenging them with a 
    - `TIMEOUT`: Time limit for new members to respond (in seconds, default: 180).
    - `UNBAN_DELAY_SECONDS`: How long to keep a kicked user banned before unbanning them (in seconds, default: 5).
 
+**Required bot permissions in each group**:
+   - Restrict members / Ban users: required for muting, kicking, and unbanning users.
+   - Delete messages: recommended so the bot can clean up verification messages.
+
 **Execute**
 
 ```bash
-docker-compose build && docker-compose up
+docker compose up -d --build
 ```
 

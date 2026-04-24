@@ -31,6 +31,7 @@ verification_sessions = {}
 seen_chat_ids = set()
 
 VERIFICATION_DELAY_SECONDS = 1
+SUCCESS_MESSAGE_DELETE_DELAY_SECONDS = 60
 GOOD_ANSWER_CALLBACK = "good"
 BAD_ANSWER_CALLBACK = "bad"
 DECOY_ANSWER_CALLBACKS = ("decoy_1", "decoy_2")
@@ -338,6 +339,11 @@ async def message_delete(message) -> None:
         logging.info("Message already deleted or not found.")
 
 
+async def delete_message_later(message, delay: int) -> None:
+    await asyncio.sleep(delay)
+    await message_delete(message)
+
+
 async def handle_answer(update: Update, context: CallbackContext) -> None:
     """Handle the user's answer to the verification question."""
     logging.debug(f"context.user_data at function start: {context.user_data}")
@@ -363,7 +369,7 @@ async def handle_answer(update: Update, context: CallbackContext) -> None:
         return
 
     if answer_id == GOOD_ANSWER_CALLBACK:
-        await context.bot.send_message(
+        success_message = await context.bot.send_message(
             chat_id=chat_id,
             text=f"{query.from_user.mention_html()} provided the correct answer.",
             parse_mode="HTML",
@@ -371,6 +377,7 @@ async def handle_answer(update: Update, context: CallbackContext) -> None:
         logging.info(f"User {user_id} provided the correct answer.")
         session["verified"] = True
         await unmute_user(update, context, user_id)
+        asyncio.create_task(delete_message_later(success_message, SUCCESS_MESSAGE_DELETE_DELAY_SECONDS))
     else:
         logging.info(f"User {user_id} provided an incorrect answer.")
         await context.bot.send_message(
