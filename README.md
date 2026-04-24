@@ -10,7 +10,7 @@ When a user joins, the bot:
 - unmutes the user after the correct answer;
 - kicks and unbans the user if they fail verification or do not answer before the timeout.
 
-The short "provided the correct answer" confirmation is deleted automatically after 60 seconds to reduce chat noise.
+Verification prompts, reminders, and result messages are deleted after the verification flow finishes to reduce chat noise.
 
 ## Setup and Run
 **Put correct variables into secrets.env file**:

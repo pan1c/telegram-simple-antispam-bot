@@ -31,7 +31,6 @@ verification_sessions = {}
 seen_chat_ids = set()
 
 VERIFICATION_DELAY_SECONDS = 1
-SUCCESS_MESSAGE_DELETE_DELAY_SECONDS = 60
 GOOD_ANSWER_CALLBACK = "good"
 BAD_ANSWER_CALLBACK = "bad"
 DECOY_ANSWER_CALLBACKS = ("decoy_1", "decoy_2")
@@ -75,6 +74,12 @@ def get_timeout_task_key(chat_id: int, user_id: int) -> tuple[int, int]:
 
 def clear_verification_session(chat_id: int, user_id: int) -> None:
     verification_sessions.pop(get_session_key(chat_id, user_id), None)
+
+
+def add_session_message(chat_id: int, user_id: int, message) -> None:
+    session = verification_sessions.get(get_session_key(chat_id, user_id))
+    if session is not None and message is not None:
+        session.setdefault("messages", []).append(message)
 
 
 def format_chat(chat) -> str:
@@ -235,6 +240,7 @@ async def send_verification_message(
     logging.info(f"Setting timeout for user {user}.")
     verification_sessions[session_key] = {
         "message": sent_message,
+        "messages": [sent_message],
         "verified": False,
     }
     jobs_dict[task_key] = asyncio.create_task(timeout_kick(update, context, user, timeout))
@@ -257,7 +263,8 @@ async def timeout_kick(update: Update, context: CallbackContext, user, timeout: 
             reminder_text = (
                 f"{user.mention_html()}, {remaining_time} seconds left to answer the verification question."
             )
-            await context.bot.send_message(chat_id=chat_id, text=reminder_text, parse_mode="HTML")
+            reminder_message = await context.bot.send_message(chat_id=chat_id, text=reminder_text, parse_mode="HTML")
+            add_session_message(chat_id, user.id, reminder_message)
             logging.info(f"User {user.id} has {remaining_time} seconds left to respond.")
             half_time_sent = True
         await asyncio.sleep(step)
@@ -266,16 +273,14 @@ async def timeout_kick(update: Update, context: CallbackContext, user, timeout: 
     session = verification_sessions.get(session_key)
     if session and not session.get("verified", False):
         logging.info(f"User {user.id} did not respond in time. Kicking.")
-        await context.bot.send_message(
+        timeout_message = await context.bot.send_message(
             chat_id=chat_id,
             text=f"{user.mention_html()} did not respond in time. Kicking.",
             parse_mode="HTML",
         )
+        add_session_message(chat_id, user.id, timeout_message)
         await kick_user(update, context, user.id)
-        message_to_delete = session.get("message")
-        if message_to_delete:
-            await message_delete(message_to_delete)
-        clear_verification_session(chat_id, user.id)
+        await cleanup_verification_session(chat_id, user.id)
 
     jobs_dict.pop(task_key, None)
     logging.debug(f"context.user_data at function end: {context.user_data}")
@@ -288,10 +293,15 @@ async def kick_user(update: Update, context: CallbackContext, user_id: int) -> N
         logging.warning("Refusing to kick the bot itself.")
         return
 
-    await context.bot.ban_chat_member(chat_id=update.effective_chat.id, user_id=user_id)
+    chat_id = update.effective_chat.id
+    await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
     logging.info(f"User {user_id} has been kicked.")
+    asyncio.create_task(unban_user_later(context, chat_id, user_id))
+
+
+async def unban_user_later(context: CallbackContext, chat_id: int, user_id: int) -> None:
     await asyncio.sleep(unban_delay_seconds)
-    await context.bot.unban_chat_member(chat_id=update.effective_chat.id, user_id=user_id)
+    await context.bot.unban_chat_member(chat_id=chat_id, user_id=user_id)
     logging.info(f"User {user_id} has been unbanned.")
 
 
@@ -339,9 +349,14 @@ async def message_delete(message) -> None:
         logging.info("Message already deleted or not found.")
 
 
-async def delete_message_later(message, delay: int) -> None:
-    await asyncio.sleep(delay)
-    await message_delete(message)
+async def cleanup_verification_session(chat_id: int, user_id: int) -> None:
+    session = verification_sessions.get(get_session_key(chat_id, user_id))
+    if session is None:
+        return
+
+    for message in session.get("messages", []):
+        await message_delete(message)
+    clear_verification_session(chat_id, user_id)
 
 
 async def handle_answer(update: Update, context: CallbackContext) -> None:
@@ -374,22 +389,23 @@ async def handle_answer(update: Update, context: CallbackContext) -> None:
             text=f"{query.from_user.mention_html()} provided the correct answer.",
             parse_mode="HTML",
         )
+        add_session_message(chat_id, user_id, success_message)
         logging.info(f"User {user_id} provided the correct answer.")
         session["verified"] = True
         await unmute_user(update, context, user_id)
-        asyncio.create_task(delete_message_later(success_message, SUCCESS_MESSAGE_DELETE_DELAY_SECONDS))
     else:
         logging.info(f"User {user_id} provided an incorrect answer.")
-        await context.bot.send_message(
+        incorrect_message = await context.bot.send_message(
             chat_id=chat_id,
             text=f"{query.from_user.mention_html()} provided an incorrect answer. Kicking.",
             parse_mode="HTML",
         )
+        add_session_message(chat_id, user_id, incorrect_message)
         await kick_user(update, context, user_id)
 
     await query.answer()
-    logging.info(f"Deleting message for user {user_id}.")
-    await message_delete(query.message)
+    logging.info(f"Cleaning verification messages for user {user_id}.")
+    await cleanup_verification_session(chat_id, user_id)
     logging.info(f"Deleting timeout task for user {user_id}.")
 
     task = jobs_dict.pop(task_key, None)
@@ -397,7 +413,6 @@ async def handle_answer(update: Update, context: CallbackContext) -> None:
         logging.warning(f"No timeout task found for user {user_id} in jobs_dict.")
     if task:
         task.cancel()
-    clear_verification_session(chat_id, user_id)
     logging.debug(f"context.user_data at function end: {context.user_data}")
 
 
