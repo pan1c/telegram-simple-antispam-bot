@@ -395,7 +395,6 @@ async def handle_answer(update: Update, context: CallbackContext) -> None:
     task = jobs_dict.pop(task_key, None)
     if task is None:
         logging.warning(f"No timeout task found for user {user_id} in jobs_dict.")
-    logging.info(f"task: {task}")
     if task:
         task.cancel()
     clear_verification_session(chat_id, user_id)
@@ -425,7 +424,7 @@ async def log_update(update: Update, context: CallbackContext) -> None:
             update_types.append(attr)
 
     user = update.effective_user
-    logging.info(
+    logging.debug(
         f"Received update id={update.update_id}, types={update_types}, "
         f"{format_chat(update.effective_chat)}, {format_user(user)}"
     )
@@ -435,7 +434,7 @@ async def log_my_chat_member(update: Update, context: CallbackContext) -> None:
     """Log when the bot is added, removed, promoted, or demoted in a chat."""
     member_update = update.my_chat_member
     remember_chat(member_update.chat, "my_chat_member")
-    logging.info(
+    logging.debug(
         f"Bot chat status changed in {format_chat(member_update.chat)} by "
         f"{format_user(member_update.from_user)}: "
         f"old=({format_chat_member(member_update.old_chat_member)}), "
@@ -450,7 +449,7 @@ async def log_chat_member(update: Update, context: CallbackContext) -> None:
     old_status = member_update.old_chat_member.status
     new_status = member_update.new_chat_member.status
     user = member_update.new_chat_member.user
-    logging.info(
+    logging.debug(
         f"Chat member status changed in {format_chat(member_update.chat)} by "
         f"{format_user(member_update.from_user)}: "
         f"old=({format_chat_member(member_update.old_chat_member)}), "
